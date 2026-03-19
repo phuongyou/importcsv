@@ -223,7 +223,7 @@ SELECT setval('users_user_id_seq', (SELECT MAX(user_id) FROM users));
 TRUNCATE TABLE client_discounts, order_documents, renewal_tasks, audit_log,
                rate_history, change_orders, agreement_insurance,
                sows, agreements, partnerships, renewal_contacts,
-               vendor_contacts, clients, users, business_units
+               vendor_contacts, clients,  business_units ,subscriptions
 RESTART IDENTITY CASCADE;
 ```
 

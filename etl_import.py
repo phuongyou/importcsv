@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 ETL Script: Viscosity Master Contracts Excel → PostgreSQL
@@ -31,9 +32,23 @@ import numpy as np
 from datetime import datetime, date
 from typing import Optional, Any
 from openpyxl import load_workbook
+import os
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
-EXCEL_PATH = "exemple.xlsx"
+# Find the first Excel file in the parent directory
+
+# Find the first Excel file in the same directory as etl_import.py
+def get_first_excel_file_in_current_dir():
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    excel_exts = ('.xlsx', '.xls', '.xlsm', '.xlsb', '.xlk')
+    for fname in os.listdir(current_dir):
+        if fname.lower().endswith(excel_exts):
+            return os.path.join(current_dir, fname)
+    return None
+
+EXCEL_PATH = get_first_excel_file_in_current_dir()
+if not EXCEL_PATH:
+    raise FileNotFoundError("No Excel file found in the current directory!")
 
 DB_CONFIG = {
     "host":     os.getenv("DB_HOST",     "localhost"),
@@ -72,6 +87,7 @@ def clean_date(val: Any) -> Optional[date]:
     """
     Parse dates safely.
     Excel sometimes stores expired dates as '00:00:00' or negative day-numbers.
+    Supports formats: YYYY-MM-DD, MM/DD/YYYY, DD/MM/YYYY, DD.MM.YYYY
     """
     if val is None or (isinstance(val, float) and np.isnan(val)):
         return None
@@ -88,7 +104,7 @@ def clean_date(val: Any) -> Optional[date]:
         except Exception:
             return None
     # Try parsing string
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"):
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%d.%m.%Y"):
         try:
             d = datetime.strptime(s[:10], fmt[:10])
             if 1900 <= d.year <= 2100:
@@ -202,42 +218,25 @@ def read_sheet(sheet_name: str) -> pd.DataFrame:
 
 
 # ─── STEP 1 & 2: SEED business_units + system user ───────────────────────────
-
 def seed_business_units(cur):
     log.info("Seeding business_units...")
     rows = [
         (1, "VNA",    "Viscosity North America", "North America entity"),
         (2, "VT",     "Viscosity Technology",    "Technology entity"),
-        (3, "VT_VNA", "Both Entities",           "Covers both VNA and VT"),
-        (4, "OTHER",  "Other/Unknown",            "Catch-all"),
+        # (3, "VT_VNA", "Both Entities",           "Covers both VNA and VT"),
+        (3, "OTHER",  "Other/Unknown",            "Catch-all"),
     ]
     for row in rows:
         cur.execute("""
-            INSERT INTO business_units (id, code, name, description)
+            INSERT INTO business_units (business_units_id, code, name, description)
             VALUES (%s, %s, %s, %s)
-            ON CONFLICT (id) DO NOTHING
+            ON CONFLICT (business_units_id) DO NOTHING
         """, row)
     log.info(f"  ✓ {len(rows)} business_units seeded")
+    return len(rows)
 
 
-def seed_system_user(cur):
-    log.info("Seeding system/ETL user...")
-    cur.execute("""
-        INSERT INTO "user" (user_id, name, email, person_name, password, role, status, teams_channel, phonenumber)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (user_id) DO NOTHING
-    """, (
-        SYSTEM_USER_ID,
-        "etl.system",
-        "etl@viscosityna.com",
-        "ETL System Import",
-        "$2b$12$PLACEHOLDER_HASH_CHANGE_BEFORE_PROD",
-        "admin",
-        "Inactive",   # deactivated — can't log in
-        None,         # teams_channel not set
-        None,         # phonenumber not set
-    ))
-    log.info("  ✓ ETL system user seeded (user_id=1, status=Inactive)")
+
 
 
 # ─── STEP 3: CLIENTS ─────────────────────────────────────────────────────────
@@ -284,6 +283,12 @@ def import_clients(cur) -> dict[str, int]:
     all_names = set(qb_clients.keys()) | agr_names | sow_names
     log.info(f"  QB: {len(qb_clients)}, Agr-only: {len(agr_names-set(qb_clients))}, "
              f"SOW-only: {len(sow_names-set(qb_clients)-agr_names)} → Total unique: {len(all_names)}")
+    
+    # DEBUG: Show all clients
+    log.info(f"\n  All clients found:")
+    for name in sorted(all_names):
+        log.info(f"    - '{name}'")
+    log.info("")
 
     client_id_map: dict[str, int] = {}
 
@@ -320,13 +325,13 @@ def import_clients(cur) -> dict[str, int]:
             meta.get("shipping_address"),
             "Active",
             1,
-            SYSTEM_USER_ID,
+            None,  # created_by: leave empty (NULL)
         ))
         row = cur.fetchone()
         client_id_map[name] = row[0]
 
     log.info(f"  ✓ {len(client_id_map)} clients imported")
-    return client_id_map
+    return client_id_map, len(client_id_map)
 
 
 # ─── STEP 4 & 5: AGREEMENTS + INSURANCE ──────────────────────────────────────
@@ -349,14 +354,26 @@ def import_agreements(cur, client_map: dict[str, int]) -> dict[int, int]:
     try:
         wb = load_workbook(EXCEL_PATH)
         ws = wb["Agreements"]
-        # Find Description column index
+        
+        # Sheet structure: row 1 = dummy, row 2 = headers, row 3+ = data
+        # Find Description column index in row 2 (header row)
         desc_col_idx = None
-        for idx, cell in enumerate(ws[1], 1):
-            if cell.value == "Description":
+        headers = [cell.value for cell in ws[2]]
+        # log.info(f"  Excel headers in row 2: {headers}")
+        
+        for idx, cell in enumerate(ws[2], 1):
+            col_name = cell.value
+            if col_name and col_name.strip() == "Description":
                 desc_col_idx = idx
+                # log.info(f"  ✓ Found Description column at index {desc_col_idx} (value: '{col_name}')")
                 break
+        
+        if not desc_col_idx:
+            log.warning(f"  ✗ Description column NOT found in row 2")
     except Exception as e:
         log.warning(f"  Could not load openpyxl workbook for hyperlinks: {e}")
+        import traceback
+        traceback.print_exc()
         wb = None
         desc_col_idx = None
 
@@ -406,37 +423,46 @@ def import_agreements(cur, client_map: dict[str, int]) -> dict[int, int]:
         exp_date = clean_date(row.get("Expiration Date"))
         status = "Expired" if rag == "R" else "Active"
         
-        # Extract description with hyperlink if available
-        # Excel row = pandas index + 3 (skip row 1 header + row 2 dup header + pandas 0-indexing)
-        description = clean(row.get("Description"))
+        # Extract document_name (display text) and document_path (hyperlink URL)
+        # Excel structure: row 1 = dummy, row 2 = headers, row 3+ = data
+        # Pandas after reset_index: idx 0 = Excel row 3, so excel_row = idx + 3
+        document_name = clean(row.get("Description"))
+        document_path = None
+        SHAREPOINT_BASE_URL = "https://viscositynorthamerica.sharepoint.com/sites/ProcessMgmt-SharedTeam/Shared Documents/General/CTA/Contracts-  Collateral/"
+        
         if wb and desc_col_idx:
             try:
                 excel_row = idx + 3
                 cell = ws.cell(row=excel_row, column=desc_col_idx)
                 if cell.hyperlink:
-                    description = cell.hyperlink.target
-            except Exception:
-                pass  # Fall back to text value
+                    hyperlink = cell.hyperlink.target
+                    # Prepend SharePoint base URL
+                    document_path = SHAREPOINT_BASE_URL + hyperlink
+                    # log.info(f"  Row {idx}: Excel row {excel_row} - Found hyperlink: {document_path}")
+                else:
+                    log.debug(f"  Row {idx}: Excel row {excel_row} - Cell value: '{cell.value}' - No hyperlink")
+            except Exception as e:
+                log.debug(f"  Row {idx}: Error extracting hyperlink: {e}")
 
         cur.execute("""
             INSERT INTO agreements (
                 client_id, business_unit_id,
                 authorized_signer, line_of_business,
                 contract_type, work_type,
-                document_name, document_stored, signed_copy, execution_method,
+                document_name, document_path, document_stored, signed_copy, execution_method,
                 date_signed, effective_date, duration_months, expiration_date,
                 rag_status, general_liability_ins, coi_required,
                 status, archived, notes,
                 created_by, last_updated_by
             ) VALUES (
                 %s,%s,  %s,%s,  %s,%s,
-                %s,%s,%s,%s,
+                %s,%s,%s,%s,%s,
                 %s,%s,%s,%s,
                 %s,%s,%s,
                 %s,%s,%s,
                 %s,%s
             )
-            RETURNING id
+            RETURNING agreements_id
         """, (
             client_id, bu_id,
             (clean(row.get("Contact")) or "")[:150] or None,
@@ -444,7 +470,8 @@ def import_agreements(cur, client_map: dict[str, int]) -> dict[int, int]:
             map_contract_type_agr(row.get("Contract Type")),
             map_work_type_agr(row.get("Work Type")),
             # document
-            (description or "")[:500] or None,
+            (document_name or "")[:500] or None,
+            (document_path or "")[:500] or None,
             0,   # document_stored: assume not confirmed
             ("Yes" if clean(row.get("Signed Copy")) == "Yes" else "No"),
             exec_method,
@@ -461,7 +488,7 @@ def import_agreements(cur, client_map: dict[str, int]) -> dict[int, int]:
             status,
             1 if status == "Expired" else 0,
             (clean(row.get("Notes")) or "")[:2000] or None,
-            SYSTEM_USER_ID, SYSTEM_USER_ID,
+            None, None,  # created_by, last_updated_by: leave empty
         ))
         agr_id = cur.fetchone()[0]
         agr_row_map[idx] = agr_id
@@ -515,7 +542,7 @@ def import_agreements(cur, client_map: dict[str, int]) -> dict[int, int]:
         wb.close()
 
     log.info(f"  ✓ {inserted} agreements inserted, {skipped} skipped")
-    return agr_row_map
+    return agr_row_map, inserted
 
 
 # ─── STEP 6: SOWs ────────────────────────────────────────────────────────────
@@ -527,6 +554,31 @@ def import_sows(cur, client_map: dict[str, int]):
 
     inserted = 0
     skipped = 0
+    
+    # Load Excel workbook for direct hyperlink extraction
+    try:
+        wb = load_workbook(EXCEL_PATH)
+        ws = wb["Statements of Work"]
+        
+        # Sheet structure: row 1 = description, row 2 = headers, row 3+ = data
+        # Find "Contract Name/Document Link" column index in row 2 (header row)
+        doc_link_col_idx = None
+        headers = [cell.value for cell in ws[2]]
+        # log.info(f"  Excel headers in row 2: {headers}")
+        
+        for idx_col, cell in enumerate(ws[2], 1):
+            col_name = cell.value
+            if col_name and "Contract Name/Document Link" in str(col_name):
+                doc_link_col_idx = idx_col
+                log.info(f"  ✓ Found 'Contract Name/Document Link' column at index {doc_link_col_idx}")
+                break
+        
+        if not doc_link_col_idx:
+            log.warning(f"  ✗ 'Contract Name/Document Link' column NOT found in row 2")
+    except Exception as e:
+        log.warning(f"  Could not load openpyxl workbook for hyperlinks: {e}")
+        wb = None
+        doc_link_col_idx = None
 
     for idx, row in df.iterrows():
         client_name = clean(row.get("Client"))
@@ -591,12 +643,32 @@ def import_sows(cur, client_map: dict[str, int]):
             "managed services", "retainer", "retainer services", "remote support"
         ) else "No"
 
+        # Extract document_name and document_path
+        document_name = (clean(row.get("Contract Name/Document Link")) or "")[:500] or None
+        document_path = None
+        SHAREPOINT_BASE_URL = "https://viscositynorthamerica.sharepoint.com/sites/ProcessMgmt-SharedTeam/Shared Documents/General/CTA/Contracts-  Collateral/"
+        
+        if wb and doc_link_col_idx:
+            try:
+                # read_sheet structure: idx 0 = Excel row 3 (row 1=description, row 2=headers, row 3+ data)
+                excel_row = idx + 3
+                cell = ws.cell(row=excel_row, column=doc_link_col_idx)
+                if cell.hyperlink:
+                    hyperlink = cell.hyperlink.target
+                    # Prepend SharePoint base URL
+                    document_path = SHAREPOINT_BASE_URL + hyperlink
+                    # log.debug(f"  Row {idx}: Excel row {excel_row} - Found hyperlink: {document_path}")
+                else:
+                    log.debug(f"  Row {idx}: Excel row {excel_row} - No hyperlink found")
+            except Exception as e:
+                log.debug(f"  Row {idx}: Error extracting hyperlink: {e}")
+
         cur.execute("""
             INSERT INTO sows (
                 client_id, business_unit_id,
                 line_of_business, contract_type, work_type,
                 project_name, project_contact,
-                document_name, document_stored, signed_copy, execution_method,
+                document_name, document_path, document_stored, signed_copy, execution_method,
                 workflow_status,
                 date_signed, effective_date, duration_months, expiration_date,
                 rag_status,
@@ -610,7 +682,7 @@ def import_sows(cur, client_map: dict[str, int]):
                 %s,%s,
                 %s,%s,%s,
                 %s,%s,
-                %s,%s,%s,%s,
+                %s,%s,%s,%s,%s,
                 %s,
                 %s,%s,%s,%s,
                 %s,
@@ -621,7 +693,7 @@ def import_sows(cur, client_map: dict[str, int]):
                 %s,%s,%s,
                 %s,%s
             )
-            RETURNING id
+            RETURNING sows_id
         """, (
             client_id, bu_id,
             (clean(row.get("Business Line ")) or "")[:100] or None,
@@ -630,7 +702,8 @@ def import_sows(cur, client_map: dict[str, int]):
             project_name,
             (clean(row.get("Project Contact")) or "")[:150] or None,
             # document
-            (clean(row.get("Contract Name/Document Link")) or "")[:500] or None,
+            document_name,
+            (document_path or "")[:500] or None,
             0,
             signed_copy,
             exec_method,
@@ -654,11 +727,15 @@ def import_sows(cur, client_map: dict[str, int]):
             (clean(row.get("Discription of Project")) or "")[:5000] or None,
             status,
             1 if status in ("Archived", "Expired") else 0,
-            SYSTEM_USER_ID, SYSTEM_USER_ID,
+            None, None,  # created_by, last_updated_by: leave empty
         ))
         inserted += 1
 
+    if wb:
+        wb.close()
+
     log.info(f"  ✓ {inserted} SOWs inserted, {skipped} skipped")
+    return inserted
 
 
 # ─── STEP 7: PARTNERSHIPS ─────────────────────────────────────────────────────
@@ -669,6 +746,52 @@ def import_partnerships(cur):
     df = df[df["Company Name"].apply(lambda x: bool(clean(x)) and clean(x) != "Company Name")]
 
     inserted = 0
+    
+    # Load Excel workbook for direct hyperlink extraction
+    try:
+        wb = load_workbook(EXCEL_PATH)
+        # Print available sheet names for debugging
+        # log.info(f"  Available sheets: {wb.sheetnames}")
+        
+        sheet_name_to_use = None
+        for sheet in wb.sheetnames:
+            if "Partnership" in sheet:
+                sheet_name_to_use = sheet
+                break
+        
+        if not sheet_name_to_use:
+            log.warning(f"  ✗ No 'Partnership' sheet found")
+            wb.close()
+            wb = None
+            agreement_col_idx = None
+        else:
+            # log.info(f"  Using sheet: '{sheet_name_to_use}'")
+            ws = wb[sheet_name_to_use]
+            
+            # First, let's examine the actual structure
+            # log.info(f"  Excel row 1 (description): {[cell.value for cell in ws[1]][:5]}...")
+            # log.info(f"  Excel row 2 (headers): {[cell.value for cell in ws[2]][:5]}...")
+            
+            # Find Agreement column index in row 2 (header row)
+            agreement_col_idx = None
+            headers = [cell.value for cell in ws[2]]
+            
+            for idx_col, cell in enumerate(ws[2], 1):
+                col_name = cell.value
+                if col_name and "agreement" in str(col_name).lower():
+                    agreement_col_idx = idx_col
+                    # log.info(f"  ✓ Found Agreement column at index {agreement_col_idx} (value: '{col_name}')")
+                    break
+            
+            if not agreement_col_idx:
+                log.warning(f"  ✗ Agreement column NOT found in row 2. Headers: {headers}")
+    except Exception as e:
+        log.warning(f"  Could not load openpyxl workbook for hyperlinks: {e}")
+        import traceback
+        traceback.print_exc()
+        wb = None
+        agreement_col_idx = None
+    
     for idx, row in df.iterrows():
         company = clean(row.get("Company Name"))
         if not company:
@@ -679,6 +802,36 @@ def import_partnerships(cur):
         partner_type = ptype_map.get(ptype_raw.lower())
 
         agreement_name = clean(row.get("Agreement"))
+        document_name = agreement_name  # Use same value for document_name
+        document_path = None
+        SHAREPOINT_BASE_URL = "https://viscositynorthamerica.sharepoint.com/sites/ProcessMgmt-SharedTeam/Shared Documents/General/CTA/Contracts-  Collateral/"
+        
+        # Extract hyperlink from Agreement column
+        if wb and agreement_col_idx:
+            try:
+                # read_sheet structure: header=0 reads row 1 as header
+                # df.columns = df.iloc[0] uses row 2 as column names
+                # df.iloc[1:] removes row 2, so idx 0 = Excel row 3
+                excel_row = idx + 3  # Pandas idx 0 = Excel row 3 (row 1=description, row 2=headers, row 3+ data)
+                
+                cell = ws.cell(row=excel_row, column=agreement_col_idx)
+                cell_value = cell.value
+                cell_hyperlink = cell.hyperlink
+                
+                # log.debug(f"  Row {idx}: Excel row {excel_row}, col {agreement_col_idx} -> value='{cell_value}', hyperlink={cell_hyperlink}")
+                
+                if cell_hyperlink:
+                    hyperlink = cell_hyperlink.target
+                    # Prepend SharePoint base URL
+                    document_path = SHAREPOINT_BASE_URL + hyperlink
+                    # log.info(f"    ✓ Found hyperlink: {document_path}")
+                else:
+                    log.debug(f"    No hyperlink in this cell")
+            except Exception as e:
+                log.warning(f"  Row {idx}: Error extracting hyperlink: {e}")
+                import traceback
+                traceback.print_exc()
+        
         agr_status_raw = agreement_name or ""
         # Determine status from agreement column content
         if "Pending" in agr_status_raw:
@@ -694,8 +847,8 @@ def import_partnerships(cur):
             INSERT INTO partnerships
                 (company_name, partner_type,
                  initial_contact_date, last_engagement_date,
-                 agreement_status, agreement_name, notes)
-            VALUES (%s,%s,%s,%s,%s,%s,%s)
+                 agreement_status, agreement_name, document_name, document_path, notes)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """, (
             company[:255],
             partner_type,
@@ -703,11 +856,17 @@ def import_partnerships(cur):
             clean_date(row.get("Last Engagement Date")),
             agr_status,
             (agreement_name or "")[:500] or None,
+            (document_name or "")[:500] or None,
+            (document_path or "")[:500] or None,
             (clean(row.get("Notes")) or "")[:2000] or None,
         ))
         inserted += 1
 
+    if wb:
+        wb.close()
+
     log.info(f"  ✓ {inserted} partnerships inserted")
+    return inserted
 
 
 # ─── VALIDATION REPORT ───────────────────────────────────────────────────────
@@ -861,23 +1020,27 @@ def main():
         client_map: dict[str, int] = {}
 
         if step in ("all", "clients"):
-            client_map = import_clients(cur)
+            client_map, _ = import_clients(cur)
+            conn.commit()
 
         if step in ("all", "agreements"):
             if not client_map:
                 # Re-load from DB if running step independently
                 cur.execute("SELECT company_name, client_id FROM clients")
                 client_map = {r[0]: r[1] for r in cur.fetchall()}
-            import_agreements(cur, client_map)
+            _, _ = import_agreements(cur, client_map)
+            conn.commit()
 
         if step in ("all", "sows"):
             if not client_map:
                 cur.execute("SELECT company_name, client_id FROM clients")
                 client_map = {r[0]: r[1] for r in cur.fetchall()}
-            import_sows(cur, client_map)
+            _ = import_sows(cur, client_map)
+            conn.commit()
 
         if step in ("all", "partnerships"):
-            import_partnerships(cur)
+            _ = import_partnerships(cur)
+            conn.commit()
 
         if step == "all":
             print_validation_report(cur)

@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CTA ETL Import - Test Interface</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 800px;
+            width: 100%;
+            padding: 40px;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        
+        .section {
+            margin-bottom: 30px;
+        }
+        
+        .section h2 {
+            font-size: 16px;
+            color: #333;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 8px;
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 6px;
+            color: #333;
+            font-weight: 500;
+            font-size: 14px;
+        }
+        
+        input[type="file"],
+        input[type="text"],
+        select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+        
+        input[type="file"]:focus,
+        input[type="text"]:focus,
+        select:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        
+        input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+        
+        .checkbox-label {
+            margin: 0;
+            cursor: pointer;
+            font-weight: normal;
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        
+        button {
+            flex: 1;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        
+        .btn-primary:hover:not(:disabled) {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+        
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #333;
+        }
+        
+        .btn-secondary:hover:not(:disabled) {
+            background: #e0e0e0;
+        }
+        
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        
+        .file-info {
+            background: #f0f0f0;
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 15px;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+        
+        .status-loading {
+            background: #fff3cd;
+            color: #856404;
+        }
+        
+        .status-success {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .status-error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .results {
+            display: none;
+            background: #f9f9f9;
+            padding: 20px;
+            border-radius: 6px;
+            border-left: 4px solid #667eea;
+            margin-top: 20px;
+        }
+        
+        .results.show {
+            display: block;
+        }
+        
+        .result-item {
+            margin-bottom: 15px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        
+        .result-item:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+        
+        .result-key {
+            font-weight: 600;
+            color: #333;
+            display: inline-block;
+            min-width: 100px;
+        }
+        
+        .result-value {
+            color: #666;
+        }
+        
+        .step-item {
+            padding: 10px;
+            margin: 8px 0;
+            background: white;
+            border-left: 3px solid #e0e0e0;
+            border-radius: 3px;
+        }
+        
+        .step-item.success {
+            border-left-color: #28a745;
+            background: #f0fdf4;
+        }
+        
+        .step-item.error {
+            border-left-color: #dc3545;
+            background: #fef2f2;
+        }
+        
+        .step-name {
+            font-weight: 600;
+            color: #333;
+            display: inline-block;
+            min-width: 150px;
+        }
+        
+        .step-status {
+            font-weight: 600;
+            margin-left: 10px;
+        }
+        
+        .step-status.success {
+            color: #28a745;
+        }
+        
+        .step-status.error {
+            color: #dc3545;
+        }
+        
+        .error-message {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 6px;
+            margin-top: 15px;
+            display: none;
+        }
+        
+        .error-message.show {
+            display: block;
+        }
+        
+        .response-json {
+            background: #282c34;
+            color: #abb2bf;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+        
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal-overlay.show {
+            display: flex;
+        }
+        
+        .modal {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            text-align: center;
+        }
+        
+        .spinner {
+            border: 4px solid #f0f0f0;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 CTA ETL Import</h1>
+        <p class="subtitle">Upload Excel files to process and import into the database</p>
+        
+        <div class="section">
+            <h2>📁 Upload File</h2>
+            
+            <div class="form-group">
+                <label for="serverUrl">Server URL</label>
+                <input type="text" id="serverUrl" value="http://localhost:5000" placeholder="http://localhost:5000">
+            </div>
+            
+            <div class="form-group">
+                <label for="file">Select Excel File</label>
+                <input type="file" id="file" accept=".xlsx,.xls,.xlsm">
+            </div>
+            
+            <div id="fileInfo" class="file-info" style="display: none;"></div>
+            
+            <div class="form-group">
+                <label for="sheets">Sheets (optional, comma-separated)</label>
+                <input type="text" id="sheets" placeholder="e.g., clients, agreements, sows">
+            </div>
+            
+            <div class="checkbox-group">
+                <input type="checkbox" id="dryRun">
+                <label for="dryRun" class="checkbox-label">Dry Run (validate only, don't import)</label>
+            </div>
+            
+            <div class="button-group">
+                <button class="btn-primary" id="submitBtn" onclick="submitImport()">Import File</button>
+                <button class="btn-secondary" onclick="testHealth()">Test Connection</button>
+            </div>
+        </div>
+        
+        <div id="error" class="error-message"></div>
+        
+        <div id="results" class="results">
+            <div id="statusBadge" class="status-badge"></div>
+            <div id="resultContent"></div>
+            <div id="responseJson" class="response-json" style="display: none;"></div>
+        </div>
+    </div>
+    
+    <div class="modal-overlay" id="loadingModal">
+        <div class="modal">
+            <div class="spinner"></div>
+            <p>Processing your file...</p>
+        </div>
+    </div>
+
+    <script>
+        // Helper functions
+        const showError = (message) => {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = message;
+            errorDiv.classList.add('show');
+            document.getElementById('results').classList.remove('show');
+        };
+        
+        const hideError = () => {
+            document.getElementById('error').classList.remove('show');
+        };
+        
+        const showLoading = () => {
+            document.getElementById('loadingModal').classList.add('show');
+        };
+        
+        const hideLoading = () => {
+            document.getElementById('loadingModal').classList.remove('show');
+        };
+        
+        const showResults = (data) => {
+            const resultsDiv = document.getElementById('results');
+            const statusBadge = document.getElementById('statusBadge');
+            const resultContent = document.getElementById('resultContent');
+            const responseJson = document.getElementById('responseJson');
+            
+            // Set status badge
+            statusBadge.textContent = data.status.toUpperCase();
+            statusBadge.className = `status-badge status-${data.status}`;
+            
+            // Build result HTML
+            let html = '';
+            html += `<div class="result-item">
+                <span class="result-key">Status:</span>
+                <span class="result-value">${data.status}</span>
+            </div>`;
+            html += `<div class="result-item">
+                <span class="result-key">File:</span>
+                <span class="result-value">${data.file || 'N/A'}</span>
+            </div>`;
+            html += `<div class="result-item">
+                <span class="result-key">Time:</span>
+                <span class="result-value">${new Date(data.timestamp).toLocaleString()}</span>
+            </div>`;
+            
+            if (data.dry_run) {
+                html += `<div class="result-item">
+                    <span class="result-value" style="color: #ff9800;">⚠️ This was a dry run - no data was imported</span>
+                </div>`;
+            }
+            
+            if (data.steps) {
+                html += '<h3 style="margin-top: 20px; margin-bottom: 10px; font-size: 14px; font-weight: 600;">Import Steps:</h3>';
+                for (const [stepName, step] of Object.entries(data.steps)) {
+                    const isSuccess = step.status === 'completed';
+                    html += `<div class="step-item ${isSuccess ? 'success' : 'error'}">
+                        <span class="step-name">${stepName}</span>
+                        <span class="step-status ${isSuccess ? 'success' : 'error'}">${step.status}</span>
+                        <div style="font-size: 12px; margin-top: 5px; color: #666;">${step.message}</div>
+                    </div>`;
+                }
+            }
+            
+            if (data.error) {
+                html += `<div class="result-item">
+                    <span class="result-key" style="color: red;">Error:</span>
+                    <span class="result-value" style="color: red;">${data.error}</span>
+                </div>`;
+            }
+            
+            resultContent.innerHTML = html;
+            responseJson.textContent = JSON.stringify(data, null, 2);
+            responseJson.style.display = 'block';
+            resultsDiv.classList.add('show');
+        };
+        
+        // File input change
+        document.getElementById('file').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const fileInfo = document.getElementById('fileInfo');
+                const sizeKB = (file.size / 1024).toFixed(2);
+                fileInfo.textContent = `📄 ${file.name} (${sizeKB} KB)`;
+                fileInfo.style.display = 'block';
+                hideError();
+            }
+        });
+        
+        // Test health endpoint
+        async function testHealth() {
+            showLoading();
+            hideError();
+            
+            const url = document.getElementById('serverUrl').value;
+            
+            try {
+                const response = await fetch(`${url}/`);
+                const data = await response.json();
+                
+                if (response.ok) {
+                    showResults({
+                        status: 'success',
+                        file: 'Health Check',
+                        timestamp: new Date().toISOString(),
+                        steps: {
+                            'server_status': {
+                                status: 'completed',
+                                message: `Server is running (${data.service} v${data.version})`
+                            }
+                        }
+                    });
+                } else {
+                    showError(`Server error: ${response.status}`);
+                }
+            } catch (error) {
+                showError(`Connection error: ${error.message}`);
+            } finally {
+                hideLoading();
+            }
+        }
+        
+        // Submit import
+        async function submitImport() {
+            hideError();
+            
+            const file = document.getElementById('file').files[0];
+            if (!file) {
+                showError('Please select a file first');
+                return;
+            }
+            
+            const url = document.getElementById('serverUrl').value;
+            const sheets = document.getElementById('sheets').value;
+            const dryRun = document.getElementById('dryRun').checked;
+            
+            showLoading();
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            if (sheets) {
+                formData.append('sheets', sheets);
+            }
+            
+            const endpoint = dryRun ? '/import/dry-run' : '/import';
+            
+            try {
+                const response = await fetch(`${url}${endpoint}`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (data.status === 'error') {
+                    showError(data.message || 'Import failed');
+                }
+                
+                showResults(data);
+            } catch (error) {
+                showError(`Request error: ${error.message}`);
+            } finally {
+                hideLoading();
+            }
+        }
+        
+        // Auto test connection on load
+        window.addEventListener('load', () => {
+            console.log('Page loaded. CTA ETL Import interface ready.');
+        });
+    </script>
+</body>
+</html>
