@@ -226,14 +226,20 @@ def seed_business_units(cur):
         # (3, "VT_VNA", "Both Entities",           "Covers both VNA and VT"),
         (3, "OTHER",  "Other/Unknown",            "Catch-all"),
     ]
+    
+    inserted = 0
     for row in rows:
-        cur.execute("""
-            INSERT INTO business_units (business_units_id, code, name, description)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (business_units_id) DO NOTHING
-        """, row)
-    log.info(f"  ✓ {len(rows)} business_units seeded")
-    return len(rows)
+        # Check if business unit already exists
+        cur.execute("SELECT business_units_id FROM business_units WHERE business_units_id = %s", (row[0],))
+        if not cur.fetchone():
+            cur.execute("""
+                INSERT INTO business_units (business_units_id, code, name, description)
+                VALUES (%s, %s, %s, %s)
+            """, row)
+            inserted += 1
+    
+    log.info(f"  ✓ {inserted} business_units seeded")
+    return inserted
 
 
 
@@ -241,13 +247,14 @@ def seed_business_units(cur):
 
 # ─── STEP 3: CLIENTS ─────────────────────────────────────────────────────────
 
-def import_clients(cur) -> dict[str, int]:
+def import_clients(cur) -> tuple:
     """
     Build client list from 3 sources (union, deduplicated by company_name):
       1. QB Consolidated Contacts (best source: has email, phone, addresses)
       2. Agreements sheet (may have clients not in QB)
       3. SOW sheet (same)
-    Returns: dict mapping company_name → client_id
+    Check for duplicates by company_name - skip if already exists.
+    Returns: tuple(dict mapping company_name → client_id, inserted_count, skipped_count)
     """
     log.info("Importing clients...")
 
@@ -291,8 +298,21 @@ def import_clients(cur) -> dict[str, int]:
     log.info("")
 
     client_id_map: dict[str, int] = {}
+    inserted = 0
+    skipped = 0
 
     for name in sorted(all_names):
+        # Check if client already exists
+        cur.execute("SELECT client_id FROM clients WHERE company_name = %s", (name,))
+        existing_client = cur.fetchone()
+        
+        if existing_client:
+            # Client already exists, skip it
+            client_id_map[name] = existing_client[0]
+            skipped += 1
+            log.debug(f"  ⊘ Client '{name}' already exists (ID: {existing_client[0]}) - skipped")
+            continue
+        
         meta = qb_clients.get(name, {})
         # Clean phone - remove "Phone: " prefix
         phone = meta.get("primary_phone")
@@ -306,13 +326,6 @@ def import_clients(cur) -> dict[str, int]:
                  billing_address, shipping_address,
                  status, is_active, created_by)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            ON CONFLICT (company_name) DO UPDATE SET
-                business_unit_id     = COALESCE(EXCLUDED.business_unit_id, clients.business_unit_id),
-                primary_contact_name = COALESCE(EXCLUDED.primary_contact_name, clients.primary_contact_name),
-                primary_email        = COALESCE(EXCLUDED.primary_email, clients.primary_email),
-                primary_phone        = COALESCE(EXCLUDED.primary_phone, clients.primary_phone),
-                billing_address      = COALESCE(EXCLUDED.billing_address, clients.billing_address),
-                shipping_address     = COALESCE(EXCLUDED.shipping_address, clients.shipping_address)
             RETURNING client_id
         """, (
             name[:255],
@@ -329,16 +342,17 @@ def import_clients(cur) -> dict[str, int]:
         ))
         row = cur.fetchone()
         client_id_map[name] = row[0]
+        inserted += 1
 
-    log.info(f"  ✓ {len(client_id_map)} clients imported")
-    return client_id_map, len(client_id_map)
+    log.info(f"  ✓ {inserted} clients inserted, {skipped} skipped (duplicates)")
+    return client_id_map, inserted, skipped
 
 
 # ─── STEP 4 & 5: AGREEMENTS + INSURANCE ──────────────────────────────────────
 
-def import_agreements(cur, client_map: dict[str, int]) -> dict[int, int]:
+def import_agreements(cur, client_map: dict[str, int]) -> tuple:
     """
-    Returns: dict mapping Excel row-index → agreement_id
+    Returns: tuple(dict mapping Excel row-index → agreement_id, inserted_count, skipped_count)
     """
     log.info("Importing agreements + insurance...")
     df = read_sheet("Agreements")
@@ -444,6 +458,38 @@ def import_agreements(cur, client_map: dict[str, int]) -> dict[int, int]:
             except Exception as e:
                 log.debug(f"  Row {idx}: Error extracting hyperlink: {e}")
 
+        # Check if agreement already exists (by client_id + document_name + effective_date)
+        eff_date = clean_date(row.get("Effective Date"))
+        check_doc_name = (document_name or "")[:500] or None
+        
+        # Build dynamic SQL to handle NULL values
+        if check_doc_name and eff_date:
+            cur.execute("""
+                SELECT agreements_id FROM agreements 
+                WHERE client_id = %s AND document_name = %s AND effective_date = %s
+            """, (client_id, check_doc_name, eff_date))
+        elif check_doc_name:
+            cur.execute("""
+                SELECT agreements_id FROM agreements 
+                WHERE client_id = %s AND document_name = %s AND effective_date IS NULL
+            """, (client_id, check_doc_name))
+        elif eff_date:
+            cur.execute("""
+                SELECT agreements_id FROM agreements 
+                WHERE client_id = %s AND document_name IS NULL AND effective_date = %s
+            """, (client_id, eff_date))
+        else:
+            cur.execute("""
+                SELECT agreements_id FROM agreements 
+                WHERE client_id = %s AND document_name IS NULL AND effective_date IS NULL
+            """, (client_id,))
+        
+        if cur.fetchone():
+            # Agreement already exists, skip it
+            skipped += 1
+            log.debug(f"  ⊘ Agreement for client_id={client_id}, doc='{document_name}' already exists - skipped")
+            continue
+
         cur.execute("""
             INSERT INTO agreements (
                 client_id, business_unit_id,
@@ -542,7 +588,7 @@ def import_agreements(cur, client_map: dict[str, int]) -> dict[int, int]:
         wb.close()
 
     log.info(f"  ✓ {inserted} agreements inserted, {skipped} skipped")
-    return agr_row_map, inserted
+    return agr_row_map, inserted, skipped
 
 
 # ─── STEP 6: SOWs ────────────────────────────────────────────────────────────
@@ -663,6 +709,37 @@ def import_sows(cur, client_map: dict[str, int]):
             except Exception as e:
                 log.debug(f"  Row {idx}: Error extracting hyperlink: {e}")
 
+        # Check if SOW already exists (by client_id + project_name + effective_date)
+        eff_date = clean_date(row.get("Effective Date"))
+        
+        # Build dynamic SQL to handle NULL values
+        if project_name and eff_date:
+            cur.execute("""
+                SELECT sows_id FROM sows 
+                WHERE client_id = %s AND project_name = %s AND effective_date = %s
+            """, (client_id, project_name, eff_date))
+        elif project_name:
+            cur.execute("""
+                SELECT sows_id FROM sows 
+                WHERE client_id = %s AND project_name = %s AND effective_date IS NULL
+            """, (client_id, project_name))
+        elif eff_date:
+            cur.execute("""
+                SELECT sows_id FROM sows 
+                WHERE client_id = %s AND project_name IS NULL AND effective_date = %s
+            """, (client_id, eff_date))
+        else:
+            cur.execute("""
+                SELECT sows_id FROM sows 
+                WHERE client_id = %s AND project_name IS NULL AND effective_date IS NULL
+            """, (client_id,))
+        
+        if cur.fetchone():
+            # SOW already exists, skip it
+            skipped += 1
+            log.debug(f"  ⊘ SOW for client_id={client_id}, project='{project_name}' already exists - skipped")
+            continue
+
         cur.execute("""
             INSERT INTO sows (
                 client_id, business_unit_id,
@@ -735,7 +812,7 @@ def import_sows(cur, client_map: dict[str, int]):
         wb.close()
 
     log.info(f"  ✓ {inserted} SOWs inserted, {skipped} skipped")
-    return inserted
+    return inserted, skipped
 
 
 # ─── STEP 7: PARTNERSHIPS ─────────────────────────────────────────────────────
@@ -746,6 +823,7 @@ def import_partnerships(cur):
     df = df[df["Company Name"].apply(lambda x: bool(clean(x)) and clean(x) != "Company Name")]
 
     inserted = 0
+    skipped = 0
     
     # Load Excel workbook for direct hyperlink extraction
     try:
@@ -843,6 +921,14 @@ def import_partnerships(cur):
         else:
             agr_status = "Pending"
 
+        # Check if partnership already exists (by company_name)
+        cur.execute("SELECT partnerships_id FROM partnerships WHERE company_name = %s", (company,))
+        if cur.fetchone():
+            # Partnership already exists, skip it
+            skipped += 1
+            log.debug(f"  ⊘ Partnership '{company}' already exists - skipped")
+            continue
+
         cur.execute("""
             INSERT INTO partnerships
                 (company_name, partner_type,
@@ -865,8 +951,8 @@ def import_partnerships(cur):
     if wb:
         wb.close()
 
-    log.info(f"  ✓ {inserted} partnerships inserted")
-    return inserted
+    log.info(f"  ✓ {inserted} partnerships inserted, {skipped} skipped")
+    return inserted, skipped
 
 
 # ─── VALIDATION REPORT ───────────────────────────────────────────────────────
@@ -1020,7 +1106,7 @@ def main():
         client_map: dict[str, int] = {}
 
         if step in ("all", "clients"):
-            client_map, _ = import_clients(cur)
+            client_map, _, _ = import_clients(cur)
             conn.commit()
 
         if step in ("all", "agreements"):
@@ -1028,18 +1114,18 @@ def main():
                 # Re-load from DB if running step independently
                 cur.execute("SELECT company_name, client_id FROM clients")
                 client_map = {r[0]: r[1] for r in cur.fetchall()}
-            _, _ = import_agreements(cur, client_map)
+            _, _, _ = import_agreements(cur, client_map)
             conn.commit()
 
         if step in ("all", "sows"):
             if not client_map:
                 cur.execute("SELECT company_name, client_id FROM clients")
                 client_map = {r[0]: r[1] for r in cur.fetchall()}
-            _ = import_sows(cur, client_map)
+            _, _ = import_sows(cur, client_map)
             conn.commit()
 
         if step in ("all", "partnerships"):
-            _ = import_partnerships(cur)
+            _, _ = import_partnerships(cur)
             conn.commit()
 
         if step == "all":

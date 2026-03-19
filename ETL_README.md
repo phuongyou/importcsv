@@ -248,3 +248,10 @@ Rồi chạy lại script.
 | `Renewals` | Clause text đã nằm trong agreements.renewal_clause_text |
 | `Budgets` | Pivot table — data đã có trong SOWs |
 | `Settings & Instructions` | Config/reference — không import |
+
+
+## 10.check doplicate
+clients: Check by company_name
+agreements: Check by client_id + document_name + effective_date
+sows: Check by client_id + project_name + effective_date
+partnerships: Check by company_name
