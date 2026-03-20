@@ -292,10 +292,10 @@ def import_clients(cur) -> tuple:
              f"SOW-only: {len(sow_names-set(qb_clients)-agr_names)} → Total unique: {len(all_names)}")
     
     # DEBUG: Show all clients
-    log.info(f"\n  All clients found:")
-    for name in sorted(all_names):
-        log.info(f"    - '{name}'")
-    log.info("")
+    # log.info(f"\n  All clients found:")
+    # for name in sorted(all_names):
+    #     log.info(f"    - '{name}'")
+    # log.info("")
 
     client_id_map: dict[str, int] = {}
     inserted = 0
@@ -499,6 +499,7 @@ def import_agreements(cur, client_map: dict[str, int]) -> tuple:
                 date_signed, effective_date, duration_months, expiration_date,
                 rag_status, general_liability_ins, coi_required,
                 status, archived, notes,
+                auto_renewal, requires_po, waiver_of_subrogation, tail_coverage_required, leadership_exemption,
                 created_by, last_updated_by
             ) VALUES (
                 %s,%s,  %s,%s,  %s,%s,
@@ -506,6 +507,7 @@ def import_agreements(cur, client_map: dict[str, int]) -> tuple:
                 %s,%s,%s,%s,
                 %s,%s,%s,
                 %s,%s,%s,
+                %s,%s,%s,%s,%s,
                 %s,%s
             )
             RETURNING agreements_id
@@ -518,8 +520,8 @@ def import_agreements(cur, client_map: dict[str, int]) -> tuple:
             # document
             (document_name or "")[:500] or None,
             (document_path or "")[:500] or None,
-            0,   # document_stored: assume not confirmed
-            ("Yes" if clean(row.get("Signed Copy")) == "Yes" else "No"),
+            None,   # document_stored: bytea - stored as NULL initially
+            ("Yes" if clean(row.get("Signed Copy")) == "Yes" else "No"),  # signed_copy: text
             exec_method,
             # dates
             clean_date(row.get("Date Signed")),
@@ -534,6 +536,7 @@ def import_agreements(cur, client_map: dict[str, int]) -> tuple:
             status,
             1 if status == "Expired" else 0,
             (clean(row.get("Notes")) or "")[:2000] or None,
+            False, False, False, False, False,  # auto_renewal, requires_po, waiver_of_subrogation, tail_coverage_required, leadership_exemption
             None, None,  # created_by, last_updated_by: leave empty
         ))
         agr_id = cur.fetchone()[0]
@@ -543,11 +546,11 @@ def import_agreements(cur, client_map: dict[str, int]) -> tuple:
         # ── Insurance record ───────────────────────────────────────────────
         # Only insert if at least one insurance field is non-null
         has_insurance = any(clean(row.get(c)) not in (None, "-") for c in INS_COLS)
-        gl_required = 1 if gl_raw == "Yes" else 0
+        gl_required = gl_raw == "Yes"
 
         if has_insurance or gl_required:
             def ic(col): return (clean(row.get(col)) or "")[:50] or None
-            coi_on_file = 1 if coi_val == "Yes" else 0
+            coi_on_file = coi_val == "Yes"
             cur.execute("""
                 INSERT INTO agreement_insurance (
                     agreement_id, client_id, gl_required,
@@ -658,7 +661,7 @@ def import_sows(cur, client_map: dict[str, int]):
         block_of_hours = clean_decimal(row.get("Block Of Hours"))
 
         # Requires PO
-        req_po = "Yes" if map_requires_po(row.get("Requires PO")) else "No"
+        req_po = "Yes" if map_requires_po(row.get("Requires PO")) else "No"  # text: Yes/No
         po_number = (clean(row.get("PO #")) or "")[:100] or None
 
         # Billing cycle — normalize typos
@@ -668,7 +671,7 @@ def import_sows(cur, client_map: dict[str, int]):
 
         # Signed copy
         sc = clean(row.get("Signed Copy"))
-        signed_copy = "Yes" if sc == "Yes" else ("No" if sc == "No" else "Pending")
+        signed_copy = "Yes" if sc == "Yes" else ("No" if sc == "No" else "Pending")  # text
 
         exec_method = "DocuSign" if clean_bool(row.get("DocuSign")) else None
 
@@ -687,7 +690,7 @@ def import_sows(cur, client_map: dict[str, int]):
         work_raw = clean(row.get("Work Type")) or ""
         renewal_required = "Yes" if work_raw.lower() in (
             "managed services", "retainer", "retainer services", "remote support"
-        ) else "No"
+        ) else "No"  # text: Yes/No/TBD
 
         # Extract document_name and document_path
         document_name = (clean(row.get("Contract Name/Document Link")) or "")[:500] or None
@@ -781,11 +784,11 @@ def import_sows(cur, client_map: dict[str, int]):
             # document
             document_name,
             (document_path or "")[:500] or None,
-            0,
-            signed_copy,
+            None,  # document_stored: bytea - stored as NULL initially
+            signed_copy,  # boolean
             exec_method,
             # workflow — all historical data = Executed (if signed) or Pre-Sales Draft
-            "Executed" if signed_copy == "Yes" else "Pre-Sales Draft",
+            "Executed" if signed_copy else "Pre-Sales Draft",
             # dates
             clean_date(row.get("Date Signed")),
             clean_date(row.get("Effective Date")),
@@ -799,11 +802,11 @@ def import_sows(cur, client_map: dict[str, int]):
             monthly_budget,
             total_budget,
             block_of_hours,
-            renewal_required,
-            0,   # in_subscription_tracker — update manually post-import
+            renewal_required,  # boolean
+            0,  # in_subscription_tracker — smallint, update manually post-import
             (clean(row.get("Discription of Project")) or "")[:5000] or None,
             status,
-            1 if status in ("Archived", "Expired") else 0,
+            1 if status in ("Archived", "Expired") else 0,  # archived: smallint
             None, None,  # created_by, last_updated_by: leave empty
         ))
         inserted += 1

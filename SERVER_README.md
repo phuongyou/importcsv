@@ -122,6 +122,78 @@ You should see a JSON response with health status and available endpoints.
 
 ---
 
+## Running with Docker
+
+### Option 1: Using Docker Compose (Recommended)
+
+```bash
+# Build and start the container
+docker-compose up --build
+
+# Run in background
+docker-compose up -d --build
+```
+
+Expected output:
+```
+cta-etl-server | Starting CTA ETL Import Server on port 5000
+cta-etl-server |  * Running on http://0.0.0.0:5000
+```
+
+### Option 2: Using Docker Directly
+
+```bash
+# Build the Docker image
+docker build -t cta-etl-server .
+
+# Run the container
+docker run -p 5000:5000 \
+  -e DB_HOST=localhost \
+  -e DB_PORT=5432 \
+  -e DB_NAME=db_contract \
+  -e DB_USER=postgres \
+  -e DB_PASSWORD=123 \
+  -v ./uploads:/app/uploads \
+  cta-etl-server
+```
+
+### Verify Docker Container is Running
+
+```bash
+# Check running containers
+docker ps
+
+# View logs
+docker logs cta-etl-server
+
+# Test the API
+curl http://localhost:5000
+```
+
+### Troubleshooting Docker
+
+**Error: "Could not locate a Flask application"**
+- Solution: The Dockerfile already sets `FLASK_APP=app.py`, so this error shouldn't occur. If it does, verify the Dockerfile is in the correct directory.
+
+**Database Connection Issues**
+- If using a local PostgreSQL (not in Docker), change `DB_HOST=localhost` to `DB_HOST=host.docker.internal` (Windows/Mac) or `172.17.0.1` (Linux)
+- Alternatively, uncomment the PostgreSQL service in `docker-compose.yml` to run both in Docker
+
+**Port Already in Use**
+- Change the port mapping: `docker run -p 8000:5000 ...` (access via `http://localhost:8000`)
+
+### Stop Docker Container
+
+```bash
+# Stop specific container
+docker stop cta-etl-server
+
+# Or if using docker-compose
+docker-compose down
+```
+
+---
+
 ## API Usage
 
 ### 1. Upload and Import File
