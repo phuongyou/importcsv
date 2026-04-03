@@ -37,18 +37,9 @@ import os
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
 # Find the first Excel file in the parent directory
 
-# Find the first Excel file in the same directory as etl_import.py
-def get_first_excel_file_in_current_dir():
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    excel_exts = ('.xlsx', '.xls', '.xlsm', '.xlsb', '.xlk')
-    for fname in os.listdir(current_dir):
-        if fname.lower().endswith(excel_exts):
-            return os.path.join(current_dir, fname)
-    return None
-
-EXCEL_PATH = get_first_excel_file_in_current_dir()
-if not EXCEL_PATH:
-    raise FileNotFoundError("No Excel file found in the current directory!")
+# EXCEL_PATH will be set by app.py when processing uploaded files
+# Or can be set via environment variable EXCEL_PATH
+EXCEL_PATH = os.getenv("EXCEL_PATH")
 
 DB_CONFIG = {
     "host":     os.getenv("DB_HOST",     "localhost"),
@@ -208,6 +199,8 @@ def map_requires_po(val: Any) -> bool:
 
 def read_sheet(sheet_name: str) -> pd.DataFrame:
     log.info(f"Reading sheet: {sheet_name}")
+    if not EXCEL_PATH or not os.path.exists(EXCEL_PATH):
+        raise FileNotFoundError(f"No Excel file found. EXCEL_PATH={EXCEL_PATH}")
     df = pd.read_excel(EXCEL_PATH, sheet_name=sheet_name, header=0)
     # All key sheets have actual headers in row 0 (first data row)
     df.columns = df.iloc[0]
@@ -712,6 +705,33 @@ def import_sows(cur, client_map: dict[str, int]):
             except Exception as e:
                 log.debug(f"  Row {idx}: Error extracting hyperlink: {e}")
 
+        # Find parent agreement (prefer MSA, fall back to any agreement for this client)
+        parent_agreement_id = None
+        try:
+            # First, try to find an MSA for this client
+            cur.execute("""
+                SELECT agreements_id FROM agreements 
+                WHERE client_id = %s AND contract_type = 'MSA'
+                ORDER BY effective_date DESC NULLS LAST
+                LIMIT 1
+            """, (client_id,))
+            result = cur.fetchone()
+            if result:
+                parent_agreement_id = result[0]
+            else:
+                # Fall back to any agreement for this client
+                cur.execute("""
+                    SELECT agreements_id FROM agreements 
+                    WHERE client_id = %s
+                    ORDER BY effective_date DESC NULLS LAST
+                    LIMIT 1
+                """, (client_id,))
+                result = cur.fetchone()
+                if result:
+                    parent_agreement_id = result[0]
+        except Exception as e:
+            log.debug(f"  Could not find parent agreement for SOW at row {idx}: {e}")
+
         # Check if SOW already exists (by client_id + project_name + effective_date)
         eff_date = clean_date(row.get("Effective Date"))
         
@@ -752,10 +772,11 @@ def import_sows(cur, client_map: dict[str, int]):
                 workflow_status,
                 date_signed, effective_date, duration_months, expiration_date,
                 rag_status,
+                parent_agreement_id,
                 requires_po, po_number,
                 billing_cycle, payment_terms,
                 monthly_budget, total_budget, block_of_hours,
-                renewal_required, in_subscription_tracker,
+                renewal_required, in_subscription_tracker, auto_renewal, rate_reviewed, new_sow_required_on_renewal,
                 description, status, archived,
                 created_by, last_updated_by
             ) VALUES (
@@ -766,10 +787,11 @@ def import_sows(cur, client_map: dict[str, int]):
                 %s,
                 %s,%s,%s,%s,
                 %s,
+                %s,
                 %s,%s,
                 %s,%s,
                 %s,%s,%s,
-                %s,%s,
+                %s,%s,%s,%s,%s,
                 %s,%s,%s,
                 %s,%s
             )
@@ -795,6 +817,7 @@ def import_sows(cur, client_map: dict[str, int]):
             (dur or "")[:20] or None,
             clean_date(row.get("Expiration Date")),
             rag,
+            parent_agreement_id,  # ← Added here
             req_po,
             po_number,
             (billing_cycle or "")[:50] or None,
@@ -802,8 +825,11 @@ def import_sows(cur, client_map: dict[str, int]):
             monthly_budget,
             total_budget,
             block_of_hours,
-            renewal_required,  # boolean
-            0,  # in_subscription_tracker — smallint, update manually post-import
+            clean_bool(renewal_required),  # renewal_required: now boolean (converted from "Yes"/"No")
+            False,  # in_subscription_tracker: boolean, always false initially
+            False,  # auto_renewal: new boolean field, default false
+            False,  # rate_reviewed: new boolean field, default false
+            False,  # new_sow_required_on_renewal: new boolean field, default false
             (clean(row.get("Discription of Project")) or "")[:5000] or None,
             status,
             1 if status in ("Archived", "Expired") else 0,  # archived: smallint
